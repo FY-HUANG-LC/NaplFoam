@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - ci/openfoam7-official-container
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:

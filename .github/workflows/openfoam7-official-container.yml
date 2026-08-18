@@ -1,0 +1,99 @@
+name: OpenFOAM 7 official-container smoke test
+
+on:
+  push:
+    branches:
+      - ci/openfoam7-official-container
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  of7-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OF7_IMAGE: openfoam/openfoam7-paraview56:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Pull OpenFOAM Foundation v7 image
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker pull "$OF7_IMAGE"
+          docker image inspect "$OF7_IMAGE" --format 'RepoDigests={{json .RepoDigests}}'
+
+      - name: Verify OpenFOAM v7 commands
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker run --rm \
+            --entrypoint /bin/bash \
+            "$OF7_IMAGE" -lc '
+              source /opt/openfoam7/etc/bashrc
+              echo "WM_PROJECT=$WM_PROJECT"
+              echo "WM_PROJECT_VERSION=$WM_PROJECT_VERSION"
+              echo "WM_OPTIONS=$WM_OPTIONS"
+              which blockMesh
+              which snappyHexMesh
+              which topoSet
+              which setFields
+              which surfaceCheck
+              blockMesh -help >/tmp/blockMesh.help 2>&1 || true
+              snappyHexMesh -help >/tmp/snappyHexMesh.help 2>&1 || true
+              topoSet -help >/tmp/topoSet.help 2>&1 || true
+              setFields -help >/tmp/setFields.help 2>&1 || true
+              surfaceCheck -help >/tmp/surfaceCheck.help 2>&1 || true
+              head -n 8 /tmp/blockMesh.help
+            '
+
+      - name: Run official pitzDaily tutorial smoke test
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker run --rm \
+            --entrypoint /bin/bash \
+            "$OF7_IMAGE" -lc '
+              set -euo pipefail
+              source /opt/openfoam7/etc/bashrc
+              work=/tmp/of7-pitzDaily
+              rm -rf "$work"
+              cp -r "$FOAM_TUTORIALS/incompressible/simpleFoam/pitzDaily" "$work"
+              cd "$work"
+              blockMesh > log.blockMesh 2>&1
+              simpleFoam > log.simpleFoam 2>&1
+              grep -q "End" log.simpleFoam
+              tail -n 25 log.simpleFoam
+            '
+
+      - name: Reconstruct and inspect NaplFoam CI archive
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p ci-output/archive
+          cat ci/archive.part* | tr -d '\r\n ' | base64 -d > ci-output/archive.tar.xz
+          xz -t ci-output/archive.tar.xz
+          tar -tJf ci-output/archive.tar.xz | tee ci-output/archive-list.txt
+          tar -xJf ci-output/archive.tar.xz -C ci-output/archive
+          find ci-output/archive -maxdepth 5 -type f -printf '%p\n' | sort | tee ci-output/extracted-files.txt
+
+      - name: Discover OpenFOAM build and mesh entry points
+        shell: bash
+        run: |
+          set -euxo pipefail
+          find ci-output/archive -type f \
+            \( -name Allwmake -o -name Allprepare -o -name Allmesh -o -name Allrun \
+               -o -name blockMeshDict -o -name snappyHexMeshDict -o -name topoSetDict \
+               -o -name controlDict \) \
+            -print | sort | tee ci-output/openfoam-entrypoints.txt
+
+      - name: Upload inspection artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openfoam7-smoke-inspection
+          path: ci-output/
+          if-no-files-found: warn
